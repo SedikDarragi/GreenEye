@@ -1,9 +1,17 @@
+import 'dart:async';
 import 'dart:math' as math;
-import 'package:camera/camera.dart';
+import 'package:camera/camera.dart' show CameraLensDirection, FlashMode, CameraPreview;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import '../services/camera_service.dart';
+import '../services/camera_service.dart'
+    if (dart.library.html) '../services/camera_service_stub.dart'
+    hide CameraServiceWeb;
 import '../services/classifier_service.dart';
 import '../models/plant_disease.dart';
+
+import '../services/camera_service_web.dart'
+    if (dart.library.io) '../services/camera_service_stub.dart'
+    show CameraServiceWeb;
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
@@ -13,33 +21,42 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class _ScannerScreenState extends State<ScannerScreen> {
-  final CameraService _cameraService = CameraService();
   final ClassifierService _classifierService = ClassifierService();
-  
+  late final CameraService _cameraService;
+  late final CameraServiceWeb? _cameraServiceWeb;
+
   PlantDisease? _currentDisease;
   bool _isAnalyzing = false;
   bool _isSheetExpanded = false;
   DateTime? _lastInferenceTime;
   bool _isFlashOn = false;
+  Timer? _webTimer;
 
-  // Stability Buffer Variables
   String? _pendingLabel;
-  final List<String> _labelHistory = []; // Buffer for voting system
+  final List<String> _labelHistory = [];
   double _currentConfidence = 0.0;
-  int _consecutiveFrames = 0;
-  // Increased to roughly 1.5 - 2 seconds of consistent detection (at ~30fps)
-  static const int _requiredStabilityFrames = 15; 
+  static const int _requiredStabilityFrames = 15;
 
   @override
   void initState() {
     super.initState();
+    if (kIsWeb) {
+      _cameraServiceWeb = CameraServiceWeb();
+    } else {
+      _cameraService = CameraService();
+      _cameraServiceWeb = null;
+    }
     _setupApp();
   }
 
   Future<void> _setupApp() async {
     try {
       await _classifierService.loadModel();
-      await _cameraService.initialize();
+      if (kIsWeb) {
+        await _cameraServiceWeb!.initialize();
+      } else {
+        await _cameraService.initialize();
+      }
       _startAnalysis();
       if (mounted) setState(() {});
     } catch (e) {
@@ -48,67 +65,90 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 
   void _startAnalysis() {
-    _cameraService.controller?.startImageStream((image) async {
-      if (_isAnalyzing || _isSheetExpanded) return; // Pause AI when reading info
-      
-      final now = DateTime.now();
-      // Only run inference every 300ms to prevent UI thread starvation
-      if (_lastInferenceTime != null && 
-          now.difference(_lastInferenceTime!).inMilliseconds < 300) return;
-      
-      _isAnalyzing = true;
+    if (kIsWeb) {
+      _webTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
+        if (_isAnalyzing || _isSheetExpanded || !mounted) return;
 
-      // Determine rotation based on lens direction
-      // Back camera usually needs 90, Front usually needs 270 on Android
-      final rotation = _cameraService.currentDirection == CameraLensDirection.back ? 90 : 270;
+        final bytes = _cameraServiceWeb!.captureFrame();
+        if (bytes.isEmpty) return;
 
-      final results = await _classifierService.predict(image, rotation: rotation);
+        _isAnalyzing = true;
+        _lastInferenceTime = DateTime.now();
 
-      if (results != null && results.isNotEmpty && mounted) {
-        _lastInferenceTime = now;
-        final topResult = results[0];
-        final String label = topResult['label'];
-        final double confidence = topResult['confidence'];
+        final results = await _classifierService.predictFromBytes(
+          bytes,
+          _cameraServiceWeb!.width,
+          _cameraServiceWeb!.height,
+        );
 
-        // Add to history for a "Voting" system to handle jitter
-        _labelHistory.add(label);
-        if (_labelHistory.length > _requiredStabilityFrames) {
-          _labelHistory.removeAt(0);
+        _processResults(results);
+        _isAnalyzing = false;
+      });
+    } else {
+      _cameraService.controller?.startImageStream((image) async {
+        if (_isAnalyzing || _isSheetExpanded) return;
+
+        final now = DateTime.now();
+        if (_lastInferenceTime != null &&
+            now.difference(_lastInferenceTime!).inMilliseconds < 300) return;
+
+        _isAnalyzing = true;
+
+        final rotation = _cameraService.currentDirection == CameraLensDirection.back ? 90 : 270;
+
+        final results = await _classifierService.predict(image, rotation: rotation);
+
+        _processResults(results);
+        _isAnalyzing = false;
+      });
+    }
+  }
+
+  void _processResults(List<Map<String, dynamic>>? results) {
+    if (results == null || results.isEmpty || !mounted) return;
+
+    final topResult = results[0];
+    final String label = topResult['label'];
+    final double confidence = topResult['confidence'];
+
+    _labelHistory.add(label);
+    if (_labelHistory.length > _requiredStabilityFrames) {
+      _labelHistory.removeAt(0);
+    }
+
+    final counts = <String, int>{};
+    for (var l in _labelHistory) {
+      counts[l] = (counts[l] ?? 0) + 1;
+    }
+    final mostFrequentLabel =
+        counts.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+    final frequency = counts[mostFrequentLabel] ?? 0;
+
+    if (mounted) _currentConfidence = confidence;
+
+    if (frequency >= (_requiredStabilityFrames * 0.7).toInt()) {
+      if (confidence >= 0.80 && !mostFrequentLabel.toLowerCase().contains('unko')) {
+        if (_currentDisease == null || _pendingLabel != mostFrequentLabel) {
+          _pendingLabel = mostFrequentLabel;
+          setState(() {
+            _currentDisease = PlantDisease.getInfo(mostFrequentLabel);
+          });
         }
-
-        // Count occurrences of the most frequent label in history
-        final counts = <String, int>{};
-        for (var l in _labelHistory) { counts[l] = (counts[l] ?? 0) + 1; }
-        final mostFrequentLabel = counts.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-        final frequency = counts[mostFrequentLabel] ?? 0;
-
-        if (mounted) _currentConfidence = confidence;
-
-        // Update UI if the most frequent label is stable enough
-        if (frequency >= (_requiredStabilityFrames * 0.7).toInt()) {
-          if (confidence >= 0.80 && !mostFrequentLabel.toLowerCase().contains('unko')) {
-            if (_currentDisease == null || _pendingLabel != mostFrequentLabel) {
-              _pendingLabel = mostFrequentLabel;
-              setState(() {
-                _currentDisease = PlantDisease.getInfo(mostFrequentLabel);
-              });
-            }
-          } else if (confidence < 0.60 || mostFrequentLabel.toLowerCase().contains('unko')) {
-            if (_currentDisease != null) {
-              setState(() {
-                _currentDisease = null;
-                _pendingLabel = null;
-                _isSheetExpanded = false;
-              });
-            }
-          }
+      } else if (confidence < 0.60 || mostFrequentLabel.toLowerCase().contains('unko')) {
+        if (_currentDisease != null) {
+          setState(() {
+            _currentDisease = null;
+            _pendingLabel = null;
+            _isSheetExpanded = false;
+          });
         }
       }
-      _isAnalyzing = false;
-    });
+    }
   }
 
   Future<void> _toggleFlash() async {
+    if (kIsWeb) return;
+
     final controller = _cameraService.controller;
     if (controller == null || !controller.value.isInitialized) return;
 
@@ -120,65 +160,60 @@ class _ScannerScreenState extends State<ScannerScreen> {
       if (mounted) setState(() {});
     } catch (e) {
       debugPrint("Error toggling flash: $e");
-      _isFlashOn = false; // Reset state if hardware doesn't support it
+      _isFlashOn = false;
     }
   }
 
   Future<void> _toggleCamera() async {
-    _isFlashOn = false; // Reset flash state when switching cameras
-    final newDirection = _cameraService.currentDirection == CameraLensDirection.back
-        ? CameraLensDirection.front
-        : CameraLensDirection.back;
+    if (kIsWeb) {
+      _cameraServiceWeb!.dispose();
+      await _cameraServiceWeb!.initialize(
+        frontCamera: !_cameraServiceWeb!.isFrontCamera,
+      );
+      if (mounted) setState(() {});
+    } else {
+      _isFlashOn = false;
+      final newDirection = _cameraService.currentDirection == CameraLensDirection.back
+          ? CameraLensDirection.front
+          : CameraLensDirection.back;
 
-    // 1. Stop the current stream
-    await _cameraService.controller?.stopImageStream();
-    // 2. Dispose of the current controller
-    _cameraService.dispose();
-    // 3. Re-initialize with the new lens
-    await _cameraService.initialize(direction: newDirection);
-    // 4. Restart the AI analysis
-    _startAnalysis();
+      await _cameraService.controller?.stopImageStream();
+      _cameraService.dispose();
+      await _cameraService.initialize(direction: newDirection);
+      _startAnalysis();
 
-    if (mounted) setState(() {});
+      if (mounted) setState(() {});
+    }
   }
 
   @override
   void dispose() {
-    _cameraService.dispose();
+    _webTimer?.cancel();
+    if (kIsWeb) {
+      _cameraServiceWeb?.dispose();
+    } else {
+      _cameraService.dispose();
+    }
     _classifierService.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = _cameraService.controller;
+    final isInitialized = kIsWeb
+        ? _cameraServiceWeb!.isInitialized
+        : (_cameraService.controller != null &&
+            _cameraService.controller!.value.isInitialized);
 
-    if (controller == null || !controller.value.isInitialized) {
+    if (!isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
       body: Stack(
         children: [
-          // Mirror the preview if using the front camera for a natural feel
-          Transform(
-            alignment: Alignment.center,
-            transform: _cameraService.currentDirection == CameraLensDirection.front
-                ? Matrix4.rotationY(math.pi)
-                : Matrix4.identity(),
-            child: SizedBox.expand(
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: 1,
-                  height: controller.value.aspectRatio,
-                  child: CameraPreview(controller),
-                ),
-              ),
-            ),
-          ),
+          _buildCameraPreview(),
 
-          // Viewfinder Overlay: Helps user center the leaf for better focal accuracy
           Center(
             child: Container(
               width: 250,
@@ -190,27 +225,25 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 ),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: null,
-            ),
-          ),
-          
-          // Flash Toggle Button
-          Positioned(
-            top: 50,
-            left: 20,
-            child: FloatingActionButton(
-              heroTag: 'flash_button',
-              mini: true,
-              backgroundColor: Colors.black54,
-              onPressed: _toggleFlash,
-              child: Icon(
-                _isFlashOn ? Icons.flash_on : Icons.flash_off,
-                color: Colors.white,
-              ),
             ),
           ),
 
-          // Switch Camera Button
+          if (!kIsWeb)
+            Positioned(
+              top: 50,
+              left: 20,
+              child: FloatingActionButton(
+                heroTag: 'flash_button',
+                mini: true,
+                backgroundColor: Colors.black54,
+                onPressed: _toggleFlash,
+                child: Icon(
+                  _isFlashOn ? Icons.flash_on : Icons.flash_off,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+
           Positioned(
             top: 50,
             right: 20,
@@ -221,11 +254,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
             ),
           ),
 
-          // Draggable Bottom Sheet for Plant Information
           if (_currentDisease != null)
             NotificationListener<DraggableScrollableNotification>(
               onNotification: (notification) {
-                // Pause analysis if user scrolls up beyond the collapsed state
                 final isExpanded = notification.extent > 0.15;
                 if (isExpanded != _isSheetExpanded) {
                   setState(() {
@@ -244,7 +275,12 @@ class _ScannerScreenState extends State<ScannerScreen> {
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.95),
                       borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-                      border: Border.all(color: _isSheetExpanded ? Colors.greenAccent : Colors.greenAccent.withOpacity(0.3), width: 1),
+                      border: Border.all(
+                        color: _isSheetExpanded
+                            ? Colors.greenAccent
+                            : Colors.greenAccent.withOpacity(0.3),
+                        width: 1,
+                      ),
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withOpacity(0.5),
@@ -258,8 +294,33 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 },
               ),
             ),
-
         ],
+      ),
+    );
+  }
+
+  Widget _buildCameraPreview() {
+    if (kIsWeb) {
+      return const SizedBox.expand(
+        child: HtmlElementView(viewType: 'webcam-preview'),
+      );
+    }
+
+    final controller = _cameraService.controller!;
+    return Transform(
+      alignment: Alignment.center,
+      transform: _cameraService.currentDirection == CameraLensDirection.front
+          ? Matrix4.rotationY(math.pi)
+          : Matrix4.identity(),
+      child: SizedBox.expand(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: 1,
+            height: controller.value.aspectRatio,
+            child: CameraPreview(controller),
+          ),
+        ),
       ),
     );
   }
@@ -269,7 +330,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
       controller: scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 24),
       children: [
-        // Grabber Handle
         Center(
           child: Container(
             margin: const EdgeInsets.symmetric(vertical: 12),
@@ -281,8 +341,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
             ),
           ),
         ),
-        
-        // Summary Header (Visible in collapsed state)
+
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
@@ -305,12 +364,13 @@ class _ScannerScreenState extends State<ScannerScreen> {
               ),
               child: Text(
                 "${(_currentConfidence * 100).toInt()}%",
-                style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    color: Colors.greenAccent, fontWeight: FontWeight.bold),
               ),
             ),
           ],
         ),
-        
+
         if (_currentDisease!.imagePath != null)
           Padding(
             padding: const EdgeInsets.only(top: 20),
@@ -324,7 +384,8 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 errorBuilder: (context, error, stackTrace) => Container(
                   height: 200,
                   color: Colors.white10,
-                  child: const Icon(Icons.image_not_supported, color: Colors.white24),
+                  child:
+                      const Icon(Icons.image_not_supported, color: Colors.white24),
                 ),
               ),
             ),
@@ -333,12 +394,12 @@ class _ScannerScreenState extends State<ScannerScreen> {
         if (!_isSheetExpanded)
           const Padding(
             padding: EdgeInsets.only(top: 8),
-            child: Text("Swipe up for details and treatments", style: TextStyle(color: Colors.white24, fontSize: 12)),
+            child: Text("Swipe up for details and treatments",
+                style: TextStyle(color: Colors.white24, fontSize: 12)),
           ),
 
         const SizedBox(height: 20),
-        
-        // Expanded Content
+
         Text(
           _currentDisease!.description,
           style: const TextStyle(color: Colors.white, fontSize: 16, height: 1.5),
@@ -372,6 +433,4 @@ class _ScannerScreenState extends State<ScannerScreen> {
       ],
     );
   }
-
-  // Cleanup of unused builder methods from previous iterations
 }

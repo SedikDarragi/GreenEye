@@ -21,7 +21,6 @@ class CameraService {
       orElse: () => cameras.first,
     );
 
-    // Lowering resolution to 'low' significantly improves framerate on budget devices
     _controller = CameraController(
       selectedCamera,
       ResolutionPreset.low,
