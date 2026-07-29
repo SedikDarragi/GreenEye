@@ -1,6 +1,6 @@
 # GreenEYe 🌿
 
-[![Live Demo](https://img.shields.io/badge/🌿_Live_Demo-Click_Here-4CAF50?style=for-the-badge&logo=googlechrome&logoColor=white)](https://YOUR_USERNAME.github.io/GreenEYe/)
+[![Live Demo](https://img.shields.io/badge/🌿_Live_Demo-Click_Here-4CAF50?style=for-the-badge&logo=googlechrome&logoColor=white)](https://YOUR_USERNAME.github.io/GreenEYe/) (work in progress)
 
 GreenEYe is a real-time plant disease classifier built with Flutter and TensorFlow Lite. It aims to support the **Sustainable Development Goals (SDG)**, specifically focusing on "Life on Land" by helping farmers and home gardeners identify plant pathologies early and take action with recommended treatments.
 
