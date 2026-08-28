@@ -37,6 +37,10 @@ class _ScannerScreenState extends State<ScannerScreen> {
   double _currentConfidence = 0.0;
   static const int _requiredStabilityFrames = 15;
 
+  String? _cameraError;
+  bool _isInitializing = true;
+  bool _isSwitchingCamera = false;
+
   @override
   void initState() {
     super.initState();
@@ -51,6 +55,10 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   Future<void> _setupApp() async {
     try {
+      setState(() {
+        _isInitializing = true;
+        _cameraError = null;
+      });
       await _classifierService.loadModel();
       if (kIsWeb) {
         await _cameraServiceWeb!.initialize();
@@ -58,14 +66,42 @@ class _ScannerScreenState extends State<ScannerScreen> {
         await _cameraService.initialize();
       }
       _startAnalysis();
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {
+          _isInitializing = false;
+        });
+      }
     } catch (e) {
       debugPrint("Setup error: $e");
+      if (mounted) {
+        setState(() {
+          _isInitializing = false;
+          _cameraError = _friendlyCameraError(e);
+        });
+      }
     }
+  }
+
+  String _friendlyCameraError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('NotReadableError') || msg.contains('Failed to allocate videosource')) {
+      return 'Camera is busy. Another app or browser tab may be using it. Close other tabs/apps that use the camera and tap Retry.';
+    }
+    if (msg.contains('NotAllowedError') || msg.contains('Permission denied') || msg.contains('NotAllowed')) {
+      return 'Camera permission denied. Please allow camera access in your browser (lock icon → Site settings → Allow camera) and tap Retry.';
+    }
+    if (msg.contains('NotFoundError') || msg.contains('Requested device not found')) {
+      return 'No camera found. Connect a camera and tap Retry.';
+    }
+    if (msg.contains('OverconstrainedError')) {
+      return 'Camera does not support the requested mode. Trying fallback — tap Retry.';
+    }
+    return 'Failed to start camera: $e';
   }
 
   void _startAnalysis() {
     if (kIsWeb) {
+      _webTimer?.cancel();
       _webTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
         if (_isAnalyzing || _isSheetExpanded || !mounted) return;
 
@@ -165,24 +201,42 @@ class _ScannerScreenState extends State<ScannerScreen> {
   }
 
   Future<void> _toggleCamera() async {
-    if (kIsWeb) {
-      _cameraServiceWeb!.dispose();
-      await _cameraServiceWeb!.initialize(
-        frontCamera: !_cameraServiceWeb!.isFrontCamera,
-      );
-      if (mounted) setState(() {});
-    } else {
-      _isFlashOn = false;
-      final newDirection = _cameraService.currentDirection == CameraLensDirection.back
-          ? CameraLensDirection.front
-          : CameraLensDirection.back;
+    if (_isSwitchingCamera) return;
+    setState(() => _isSwitchingCamera = true);
+    try {
+      if (kIsWeb) {
+        // Pause analysis while switching to avoid concurrent capture
+        _webTimer?.cancel();
+        _webTimer = null;
+        try {
+          await _cameraServiceWeb!.initialize(
+            frontCamera: !_cameraServiceWeb!.isFrontCamera,
+          );
+          setState(() => _cameraError = null);
+        } catch (e) {
+          debugPrint("Switch camera error: $e");
+          if (mounted) setState(() => _cameraError = _friendlyCameraError(e));
+          return;
+        } finally {
+          // Restart analysis only if widget still mounted and no fatal error
+          if (mounted && _cameraError == null) _startAnalysis();
+        }
+        if (mounted) setState(() {});
+      } else {
+        _isFlashOn = false;
+        final newDirection = _cameraService.currentDirection == CameraLensDirection.back
+            ? CameraLensDirection.front
+            : CameraLensDirection.back;
 
-      await _cameraService.controller?.stopImageStream();
-      _cameraService.dispose();
-      await _cameraService.initialize(direction: newDirection);
-      _startAnalysis();
+        await _cameraService.controller?.stopImageStream();
+        _cameraService.dispose();
+        await _cameraService.initialize(direction: newDirection);
+        _startAnalysis();
 
-      if (mounted) setState(() {});
+        if (mounted) setState(() {});
+      }
+    } finally {
+      if (mounted) setState(() => _isSwitchingCamera = false);
     }
   }
 
@@ -205,8 +259,57 @@ class _ScannerScreenState extends State<ScannerScreen> {
         : (_cameraService.controller != null &&
             _cameraService.controller!.value.isInitialized);
 
-    if (!isInitialized) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_cameraError != null) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.videocam_off, size: 56, color: Colors.white54),
+                const SizedBox(height: 16),
+                const Text(
+                  'Camera unavailable',
+                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _cameraError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, height: 1.4),
+                ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  onPressed: () {
+                    setState(() => _cameraError = null);
+                    _setupApp();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                  style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                ),
+                if (kIsWeb) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Tip: If it still says “Failed to allocate videosource”, close other tabs using the camera (Meet, Zoom, etc.) and ensure the site is on HTTPS.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (!isInitialized || _isInitializing) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(child: CircularProgressIndicator(color: Colors.greenAccent)),
+      );
     }
 
     return Scaffold(
@@ -249,8 +352,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
             right: 20,
             child: FloatingActionButton(
               backgroundColor: Colors.black54,
-              onPressed: _toggleCamera,
-              child: const Icon(Icons.flip_camera_ios, color: Colors.white),
+              onPressed: _isSwitchingCamera ? null : _toggleCamera,
+              child: _isSwitchingCamera
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.flip_camera_ios, color: Colors.white),
             ),
           ),
 
