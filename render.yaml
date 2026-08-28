@@ -1,0 +1,49 @@
+# GreenEye - Render deployment config
+# This project is FRONTEND-ONLY (Flutter Web + offline TFLite).
+# No backend service is required, so Render is OPTIONAL.
+# Two options:
+#  1. Use Netlify (recommended, configured via netlify.toml) - just connect GitHub repo
+#  2. Use Render Static Site (this file) - alternative to Netlify if you prefer Render
+#
+# If you later add a backend (e.g., Dart Frog, Node, Python API for analytics),
+# add a `type: web` service below.
+
+services:
+  # Optional: Deploy the same Flutter Web build on Render as a static site
+  # Remove this entire block if you stick with Netlify only.
+  - type: static_site
+    name: greeneye-frontend
+    # Render's environment is Ubuntu - install Flutter on build
+    buildCommand: |
+      if [ ! -d "$HOME/flutter" ]; then
+        git clone https://github.com/flutter/flutter.git $HOME/flutter -b stable --depth 1;
+      fi
+      export PATH="$HOME/flutter/bin:$PATH"
+      flutter config --enable-web
+      flutter pub get
+      flutter build web --release --base-href "/"
+    staticPublishPath: build/web
+    # SPA routing
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+    # Uncomment to auto-deploy on push to main
+    # autoDeploy: true
+
+  # Example backend placeholder - uncomment if you add a backend folder:
+  # - type: web
+  #   name: greeneye-api
+  #   env: node
+  #   plan: free
+  #   rootDir: backend
+  #   buildCommand: npm install && npm run build
+  #   startCommand: npm start
+  #   healthCheckPath: /health

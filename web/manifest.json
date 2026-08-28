@@ -1,11 +1,11 @@
 {
-    "name": "green_eye",
-    "short_name": "green_eye",
+    "name": "GreenEye",
+    "short_name": "GreenEye",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0a2e1a",
+    "theme_color": "#4CAF50",
+    "description": "Real-time plant disease classifier - offline TFLite",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

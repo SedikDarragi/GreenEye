@@ -1,0 +1,48 @@
+[build]
+  # Netlify build configuration for GreenEye Flutter Web
+  # Flutter is not pre-installed on Netlify images, so we install it on first build
+  command = """
+    if [ ! -d "$HOME/flutter" ]; then
+      echo "Installing Flutter SDK..." &&
+      git clone https://github.com/flutter/flutter.git $HOME/flutter -b stable --depth 1;
+    fi &&
+    export PATH="$HOME/flutter/bin:$PATH" &&
+    flutter --version &&
+    flutter config --enable-web &&
+    flutter pub get &&
+    flutter build web --release --base-href "/"
+    """
+  publish = "build/web"
+
+[build.environment]
+  # Use a consistent Flutter channel; Netlify will cache $HOME/flutter between builds
+  FLUTTER_VERSION = "3.24.0"
+
+# SPA fallback - Flutter web uses hash/path routing, need redirect to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security + WASM/COOP headers required for flutter_litert / TFLite on some browsers
+# SharedArrayBuffer/WASM threading needs COOP+COEP if enabled; harmless otherwise
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Alternative: if you prefer Netlify's auto-deploy via `netlify deploy`, keep build/web as publish dir
