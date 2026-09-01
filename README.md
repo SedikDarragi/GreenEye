@@ -9,7 +9,6 @@
 [![Dart](https://img.shields.io/badge/Dart-%5E3.0-0175C2?style=flat&logo=dart&logoColor=white)](https://dart.dev)
 [![TFLite](https://img.shields.io/badge/TFLite-flutter__litert-FF6F00?style=flat&logo=tensorflow&logoColor=white)](https://pub.dev/packages/flutter_litert)
 [![Netlify](https://img.shields.io/badge/Deployed%20on-Netlify-00C7B7?style=flat&logo=netlify&logoColor=white)](https://app.netlify.com)
-[![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 [![SDG](https://img.shields.io/badge/SDG-Life%20on%20Land-3c9750?style=flat)](https://sdgs.un.org/goals/goal15)
 
 [Live Demo](https://greeneye.netlify.app) • [Report Bug](https://github.com/SedikDarragi/GreenEye/issues) • [Request Feature](https://github.com/SedikDarragi/GreenEye/issues)
