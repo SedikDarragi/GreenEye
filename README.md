@@ -11,7 +11,7 @@
 [![Netlify](https://img.shields.io/badge/Deployed%20on-Netlify-00C7B7?style=flat&logo=netlify&logoColor=white)](https://app.netlify.com)
 [![SDG](https://img.shields.io/badge/SDG-Life%20on%20Land-3c9750?style=flat)](https://sdgs.un.org/goals/goal15)
 
-[Live Demo](https://greeneye.netlify.app) • [Report Bug](https://github.com/SedikDarragi/GreenEye/issues) • [Request Feature](https://github.com/SedikDarragi/GreenEye/issues)
+[Live Demo](https://green-eye-six.vercel.app/) • [Report Bug](https://github.com/SedikDarragi/GreenEye/issues) • [Request Feature](https://github.com/SedikDarragi/GreenEye/issues)
 
 > **Demo:** Connect your repo to Netlify — `netlify.toml` is already configured. See [Deployment](#-deployment) below. Replace the `Live Demo` URL above once deployed.
 
